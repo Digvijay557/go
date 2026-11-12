@@ -6,93 +6,111 @@ import (
 	"sync"
 	"time"
 )
+
 type Task struct {
-    Name     string
-    Duration time.Duration
+	ID       int
+	Name     string
+	Duration time.Duration
 	Status   string
 }
 
-
-
-func runTask(ctx context.Context,task *Task, wg *sync.WaitGroup, results chan string) {
-	defer wg.Done()
-	task.Status = "RUNNING"
-	fmt.Println("Task " + task.Name + " is Running")
-	
-	select {
-	case <- time.After(task.Duration):
-		results <- "Task " + task.Name + " is Completed"
-		task.Status = "COMPLETED"	
-	case <-ctx.Done():
-		// fmt.Println("Task " + name + " is Cancelled")
-		task.Status = "CANCELLED"
-		results <- "Task " + task.Name+ " is Cancelled"
-		
-	}
-
+type taskResult struct {
+	TaskID int
+	Status string
+	Error  error
+}
+type taskManager struct {
+	Tasks []Task
+	mu sync.Mutex
 }
 
-func runError(ctx context.Context,name string, duration time.Duration, wg *sync.WaitGroup, errors chan string) {
-	defer wg.Done()
+func (tm *taskManager) AddTask (task Task){
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
 
-	fmt.Println("Task " + name + " is Running")
-	select{
-		case <- time.After(duration):
-			errors <- "Task " + name + " has error"
-			
-		case <- ctx.Done():
-			errors <- "Task " + name + " has delayed error"
-		}
+	tm.Tasks = append(tm.Tasks, task)
+}
+
+const (
+	Pending   = "PENDING"
+	Running   = "RUNNING"
+	Completed = "COMPLETED"
+	Cancelled = "CANCELLED"
+	Failed    = "FAILED"
+)
+
+func runTask(ctx context.Context, task *Task, wg *sync.WaitGroup, results chan taskResult, 	mu sync.Mutex) {
+	mu.Lock()
+	defer wg.Done()
+	defer mu.Unlock()
+
+	task.Status = Running
+	fmt.Println("Task", task.Name, "is Running")
+
+	select {
+	case <-time.After(task.Duration):
+		task.Status = Completed
+		results <- taskResult{TaskID: task.ID, Status: task.Status}
+	case <-ctx.Done():
+		task.Status = Cancelled
+		results <- taskResult{TaskID: task.ID, Status: task.Status, Error: ctx.Err()}
+	}
+}
+
+func (tm *taskManager) RunTasks(ctx context.Context) {
+	var wg sync.WaitGroup
+
+	wg.Add(len(tm.Tasks))
+
+	results := make(chan taskResult, len(tm.Tasks))
+
+	for i := range tm.Tasks{
+		go runTask(ctx, &tm.Tasks[i], &wg, results,tm.mu)
+	}
+	go func(){
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		fmt.Println(
+			"Task ID:", result.TaskID,
+			"| Status:", result.Status,
+		)
+	}
+
+
+
 }
 
 func main() {
-	tasks := []Task{
-    {"Task 1", 1 * time.Second,"PENDING"},
-    {"Task 2", 3 * time.Second,"PENDING"},
-    {"Task 3", 2 * time.Second,"PENDING"},
-}
+	manager := taskManager{}
 
-	var wg sync.WaitGroup
+	manager.AddTask(Task{
+	ID:       1,
+	Name:     "Task 1",
+	Duration: 1 * time.Second,
+	Status:   "PENDING",
+})
 
-	wg.Add(len(tasks))
-	fmt.Println(tasks[1].Status)
-	ch := make(chan string, len(tasks))
-	er := make(chan string, len(tasks))
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		2*time.Second,
-	)
+manager.AddTask(Task{
+	ID:       2,
+	Name:     "Task 2",
+	Duration: 3 * time.Second,
+	Status:   "PENDING",
+})
+
+manager.AddTask(Task{
+	ID:       3,
+	Name:     "Task 3",
+	Duration: 2 * time.Second,
+	Status:   "PENDING",
+})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	for i := range tasks {
-		go runTask(ctx, &tasks[i], &wg, ch)
-	}
-	fmt.Println(tasks[1].Status)
-	
-	go func() {
-		wg.Wait()
-		close(ch)
-		close(er)
-		}()
-		// timeout := time.After(2 * time.Second)
-		
-		for ch != nil || er != nil {
-			select {
-			case message, ok := <-ch:
-				if !ok {
-					ch = nil
-					continue
-				}
-				fmt.Println(message)
-				
-			case message, ok := <-er:
-				if !ok {
-					er = nil
-					continue
-				}
-				fmt.Println(message)
-			}
-		}
-		fmt.Println(tasks[1].Status)
+
+	manager.RunTasks(ctx)
 
 	
 }
