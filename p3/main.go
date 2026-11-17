@@ -39,22 +39,34 @@ const (
 	Failed    = "FAILED"
 )
 
-func runTask(ctx context.Context, task *Task, wg *sync.WaitGroup, results chan taskResult, 	mu sync.Mutex) {
-	mu.Lock()
-	defer wg.Done()
-	defer mu.Unlock()
+func runTask(ctx context.Context, task *Task, wg *sync.WaitGroup, results chan taskResult, 	mu *sync.Mutex) {
+defer wg.Done()
 
-	task.Status = Running
-	fmt.Println("Task", task.Name, "is Running")
+mu.Lock()
+task.Status = Running
+mu.Unlock()
 
-	select {
-	case <-time.After(task.Duration):
-		task.Status = Completed
-		results <- taskResult{TaskID: task.ID, Status: task.Status}
-	case <-ctx.Done():
-		task.Status = Cancelled
-		results <- taskResult{TaskID: task.ID, Status: task.Status, Error: ctx.Err()}
-	}
+fmt.Println("Task", task.Name, "is Running")
+
+select {
+case <-time.After(task.Duration):
+    mu.Lock()
+    task.Status = Completed
+    mu.Unlock()
+
+    results <- taskResult{TaskID: task.ID, Status: Completed}
+
+case <-ctx.Done():
+    mu.Lock()
+    task.Status = Cancelled
+    mu.Unlock()
+
+    results <- taskResult{
+        TaskID: task.ID,
+        Status: Cancelled,
+        Error: ctx.Err(),
+    }
+}
 }
 
 func (tm *taskManager) RunTasks(ctx context.Context) {
@@ -64,9 +76,15 @@ func (tm *taskManager) RunTasks(ctx context.Context) {
 
 	results := make(chan taskResult, len(tm.Tasks))
 
-	for i := range tm.Tasks{
-		go runTask(ctx, &tm.Tasks[i], &wg, results,tm.mu)
-	}
+for i := range tm.Tasks {
+    go runTask(
+        ctx,
+        &tm.Tasks[i],
+        &wg,
+        results,
+        &tm.mu,
+    )
+}
 	go func(){
 		wg.Wait()
 		close(results)
@@ -78,9 +96,6 @@ func (tm *taskManager) RunTasks(ctx context.Context) {
 			"| Status:", result.Status,
 		)
 	}
-
-
-
 }
 
 func main() {
@@ -107,7 +122,7 @@ manager.AddTask(Task{
 	Status:   "PENDING",
 })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	manager.RunTasks(ctx)
